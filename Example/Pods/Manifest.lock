@@ -1,0 +1,16 @@
+PODS:
+  - StoreKitHelper (0.1.0)
+
+DEPENDENCIES:
+  - StoreKitHelper (from `../`)
+
+EXTERNAL SOURCES:
+  StoreKitHelper:
+    :path: "../"
+
+SPEC CHECKSUMS:
+  StoreKitHelper: e7f355376e415825e57cbfe59c3328a65bbd20b4
+
+PODFILE CHECKSUM: 14336a57eb0da261646da9bf26ab95b065e373fa
+
+COCOAPODS: 1.15.2
