@@ -7,26 +7,32 @@
 
 import Foundation
 import StoreKit
+import BBKit
 
 public class StoreService {
-    private let productIds: [String]
-
-    public init(
-        productIds: [String]
-    ) {
+    private var productIds: [String] = []
+    
+    public static let shared = StoreService()
+    
+    public func start(productIds: [String], comple: @escaping (Transaction?) -> Void) {
         self.productIds = productIds
-        updateTransactionsOnLaunch()
+        updateTransactionsOnLaunch(comple: comple)
     }
     
-    public func getProducts(productIds: [String] = []) async throws -> [Product] {
+    public func getProducts(productIds: [String] = []) async -> [Product] {
         var productIds = productIds
         if productIds.isEmpty {
             productIds = self.productIds
         }
-        return try await Product.products(for: productIds)
+        do {
+            return try await Product.products(for: productIds)
+        } catch {
+            BBLog_e("获取商品失败 \(error)")
+        }
+        return []
     }
     
-    public func restorePurchases() async throws {
+    public func restorePurchases() async throws -> Transaction? {
         let transactions = try await getValidProductTransations()
         var valids: [Transaction] = []
         transactions.forEach {
@@ -35,14 +41,20 @@ public class StoreService {
                 valids.append($0)
             }
         }
-        print(valids)
+        return valids.first
     }
     
     @discardableResult
     open func purchase(
         _ product: Product
-    ) async throws -> (Product.PurchaseResult, Transaction?) {
-        try await purchase(product, options: [])
+    ) async -> Transaction? {
+        do {
+            let result = try await purchase(product, options: [])
+            return result.1
+        } catch {
+            BBLog_e("订阅失败 = \(error.localizedDescription)")
+            return nil
+        }
     }
     
     @discardableResult
@@ -55,43 +67,64 @@ public class StoreService {
         #else
         
         let result = try await product.purchase()
+        var trans: Transaction?
         switch result {
-        case .success(let result): try await finalizePurchaseResult(result)
-        case .pending: break
-        case .userCancelled: break
+        case .success(let result):
+            BBLog_i("支付成功")
+            trans = try await finalizePurchaseResult(result)
+        case .pending:
+            BBLog_i("支付pending")
+        case .userCancelled:
+            BBLog_i("取消支付")
         @unknown default: break
         }
-        return (result, nil)
+        return (result, trans)
         #endif
     }
     
     open func finalizePurchaseResult(
         _ result: VerificationResult<Transaction>
-    ) async throws {
+    ) async throws -> Transaction {
         let transaction = try result.verify()
         await transaction.finish()
+        return transaction
     }
     
-    open func updateTransactionsOnLaunch() {
+    open func checkCurrentEntitlements(comple: @escaping ([Transaction]) -> Void) {
         Task.detached {
+            var isvailds: Set<Transaction> = []
             for await result in Transaction.currentEntitlements {
-                guard case .verified(let transaction) = result else {
+                let transac = try? result.verify()
+                guard let transac else {
                     continue
                 }
-                try result.verify()
-                let isvaild = try result.verify().isValid
-                print("res")
+                let isvaild = transac.isValid
+                isvailds.insert(transac)
             }
             
+            comple(Array(isvailds))
+        }
+    }
+    
+    open func updateTransactionsOnLaunch(comple: @escaping (Transaction?) -> Void) {
+        Task.detached {
+            var isvailds: Set<Transaction> = []
+    
             for await result in Transaction.updates {
                 do {
-                    try result.verify()
-                    let isvaild = try result.verify().isValid
-                    print("res")
+                    let transac = try result.verify()
+                    let isvaild = transac.isValid
+                    
+                    if isvaild {
+                        isvailds.insert(transac)
+                    }
                 } catch {
-                    print("Transaction listener error: \(error)")
+                    BBLog_e("Transaction listener error: \(error)")
                 }
             }
+            
+            let update = isvailds.first
+            comple(update)
         }
     }
     
@@ -135,5 +168,96 @@ public extension Transaction {
         if revocationDate != nil { return false }
         guard let date = expirationDate else { return true }
         return date > Date()
+    }
+}
+
+public enum StoreProductType: Equatable {
+    case monthly      // 包月
+    case quarterly    // 包季
+    case yearly       // 包年
+    case otherSubscription // 其他订阅周期
+    case lifetime     // 一次性买断，可恢复（non-consumable）
+    case nonRenewable // 非自动续订型（如固定期 VIP）
+    case consumable   // 消耗型，不可恢复
+    case unknown
+}
+
+public extension Product {
+    var productType: StoreProductType {
+        switch self.type {
+        case .autoRenewable:
+            if let period = subscription?.subscriptionPeriod {
+                switch period.unit {
+                case .month:
+                    switch period.value {
+                    case 1: return .monthly
+                    case 3: return .quarterly
+                    default: return .otherSubscription
+                    }
+                case .year:
+                    return period.value == 1 ? .yearly : .otherSubscription
+                default:
+                    return .otherSubscription
+                }
+            }
+            return .unknown
+
+        case .nonConsumable:
+            return .lifetime
+
+        case .nonRenewable:
+            return .nonRenewable
+
+        case .consumable:
+            return .consumable
+
+        default:
+            return .unknown
+        }
+    }
+
+    /// 是否可以通过「恢复购买」找回
+    var isRestorable: Bool {
+        switch self.productType {
+        case .lifetime, .nonRenewable, .monthly, .quarterly, .yearly, .otherSubscription:
+            return true
+        default:
+            return false
+        }
+    }
+    
+    private static let priceFormatter: NumberFormatter = {
+        let priceFormatter = NumberFormatter()
+        priceFormatter.numberStyle = .currency
+        return priceFormatter
+    }()
+
+    /// 本地化格式化价格字符串，使用商品的 priceFormatStyle.locale
+     var localizedPrice: String? {
+         let formatter = Product.priceFormatter
+         // 使用 Product 的 locale（priceFormatStyle.locale）
+         formatter.locale = priceFormatStyle.locale
+         formatter.currencyCode = priceFormatStyle.currencyCode
+         return formatter.string(from: price as NSDecimalNumber)
+     }
+
+    /// 获取商品价格对应的货币符号（如 "$", "¥"）
+    var currencySymbol: String? {
+        let formatter = Product.priceFormatter
+        formatter.locale = priceFormatStyle.locale
+        formatter.currencyCode = priceFormatStyle.currencyCode
+        return formatter.currencySymbol
+    }
+    
+    
+    /// 价格数字字符串，保留两位小数，不带货币符号
+    var priceNumberTwoDecimals: String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        formatter.locale = Locale.current
+        
+        return formatter.string(from: self.price as NSDecimalNumber) ?? "\(self.price)"
     }
 }
