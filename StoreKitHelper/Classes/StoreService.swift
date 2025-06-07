@@ -9,14 +9,41 @@ import Foundation
 import StoreKit
 import BBKit
 
+public enum PurchaseResult {
+    case succes(Transaction)
+    case cancel
+    case pending
+    case verify_failed
+    case valid_failed
+    case unknow
+    
+    public var string: String {
+        switch self {
+        case .succes:
+            return "succes"
+        case .cancel:
+            return "cancel"
+        case .pending:
+            return "pending"
+        case .verify_failed:
+            return "verify_failed"
+        case .valid_failed:
+            return "valid_failed"
+        case .unknow:
+            return "unknow"
+        }
+    }
+}
+
 public class StoreService {
     private var productIds: [String] = []
     
     public static let shared = StoreService()
+    var updateListenerTask: Task<Void, Error>? = nil // 支付事件监听
     
     public func start(productIds: [String], comple: @escaping (Transaction?) -> Void) {
         self.productIds = productIds
-        updateTransactionsOnLaunch(comple: comple)
+        updateListenerTask = updateTransactionsOnLaunch(comple: comple)
     }
     
     public func getProducts(productIds: [String] = []) async -> [Product] {
@@ -47,13 +74,28 @@ public class StoreService {
     @discardableResult
     open func purchase(
         _ product: Product
-    ) async -> Transaction? {
+    ) async -> PurchaseResult {
         do {
             let result = try await purchase(product, options: [])
-            return result.1
+            let trans = result.1
+            let purchaseResult = result.0
+            
+            switch purchaseResult {
+            case .success:
+                if let trans, trans.isValid {
+                    return .succes(trans)
+                }
+                return .valid_failed
+            case .pending:
+                return .pending
+            case .userCancelled:
+                return .cancel
+            @unknown default:
+                return .unknow
+            }
         } catch {
             BBLog_e("订阅失败 = \(error.localizedDescription)")
-            return nil
+            return .verify_failed
         }
     }
     
@@ -70,8 +112,9 @@ public class StoreService {
         var trans: Transaction?
         switch result {
         case .success(let result):
-            BBLog_i("支付成功")
             trans = try await finalizePurchaseResult(result)
+            let bool = trans?.isValid
+            BBLog_i("支付成功, 是否是有效订阅 \(String(describing: bool?.string))")
         case .pending:
             BBLog_i("支付pending")
         case .userCancelled:
@@ -90,41 +133,29 @@ public class StoreService {
         return transaction
     }
     
-    open func checkCurrentEntitlements(comple: @escaping ([Transaction]) -> Void) {
-        Task.detached {
-            var isvailds: Set<Transaction> = []
-            for await result in Transaction.currentEntitlements {
-                let transac = try? result.verify()
-                guard let transac else {
-                    continue
-                }
-                let isvaild = transac.isValid
-                isvailds.insert(transac)
+    open func checkCurrentEntitlements() async -> [Transaction] {
+        var validTransactions: Set<Transaction> = []
+        
+        for try await result in Transaction.currentEntitlements {
+            if let transac = try? result.verify() {
+                validTransactions.insert(transac)
             }
-            
-            comple(Array(isvailds))
         }
+        
+        return Array(validTransactions)
     }
     
-    open func updateTransactionsOnLaunch(comple: @escaping (Transaction?) -> Void) {
-        Task.detached {
-            var isvailds: Set<Transaction> = []
-    
+    open func updateTransactionsOnLaunch(comple: @escaping (Transaction?) -> Void) -> Task<Void, Error> {
+        return Task.detached {
             for await result in Transaction.updates {
                 do {
                     let transac = try result.verify()
-                    let isvaild = transac.isValid
-                    
-                    if isvaild {
-                        isvailds.insert(transac)
-                    }
+                    await transac.finish()
+                    comple(transac)
                 } catch {
                     BBLog_e("Transaction listener error: \(error)")
                 }
             }
-            
-            let update = isvailds.first
-            comple(update)
         }
     }
     
@@ -144,6 +175,17 @@ public class StoreService {
         guard let latest = await Transaction.latest(for: productId) else { return nil }
         let result = try latest.verify()
         return result.isValid ? result : nil
+    }
+    
+    open func getLatest(for productId: String) async -> Transaction? {
+        guard let latest = await Transaction.latest(for: productId) else { return nil }
+        do {
+            let result = try latest.verify()
+            return result
+        } catch {
+            BBLog_e("verify 失败 \(error.localizedDescription)")
+            return nil
+        }
     }
 }
 
