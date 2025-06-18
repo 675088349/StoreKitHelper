@@ -58,7 +58,7 @@ class ViewController: UIViewController {
         collectionView.register(ImageCell.self, forCellWithReuseIdentifier: "ImageCell")
         
         // 设置从右到左的语义
-        collectionView.semanticContentAttribute = .unspecified
+        collectionView.semanticContentAttribute = .forceRightToLeft
         
         // 将CollectionView添加到ScrollView中
         scrollView.addSubview(collectionView)
@@ -78,12 +78,15 @@ class ViewController: UIViewController {
         
         switch gesture.state {
         case .began:
-            longPressLocation = location
+            // 保存转换后的collectionView坐标，确保坐标系一致
+            longPressLocation = scrollView.convert(location, to: collectionView)
             startZooming(at: location)
-            
+            updateZoomPosition(to: gesture.location(in: scrollView))
         case .changed:
+            print("contentOffset x = \(scrollView.contentOffset.x)")
             if isZooming {
-                updateZoomPosition(to: gesture.location(in: scrollView))
+                updateZoomPosition(to: gesture.location(in: scrollView), sensitivityFactor: 1)
+//                updateZoomPosition(to: gesture.location(in: scrollView), sensitivityFactor)
             }
             
         case .ended, .cancelled:
@@ -124,12 +127,16 @@ class ViewController: UIViewController {
         return CGRect(x: zoomX, y: zoomY, width: zoomWidth, height: zoomHeight)
     }
     
-    private func updateZoomPosition(to location: CGPoint) {
+    private func updateZoomPosition(to location: CGPoint, sensitivityFactor: CGFloat = 1) {
         guard isZooming else { return }
         
-        // 计算移动的偏移量
-        let deltaX = location.x - longPressLocation.x
-        let deltaY = location.y - longPressLocation.y
+        // 转换当前位置到collectionView坐标系
+        let collectionViewLocation = scrollView.convert(location, to: collectionView)
+        
+        // 计算移动的偏移量（longPressLocation已经是collectionView坐标）
+        // 添加放大系数，增强滑动响应
+        let deltaX = (collectionViewLocation.x - longPressLocation.x) * sensitivityFactor
+        let deltaY = (collectionViewLocation.y - longPressLocation.y) * sensitivityFactor
         
         // 更新ScrollView的contentOffset
         var newOffset = scrollView.contentOffset
@@ -144,7 +151,10 @@ class ViewController: UIViewController {
         newOffset.y = max(0, min(newOffset.y, maxOffsetY))
         
         scrollView.contentOffset = newOffset
-        longPressLocation = location
+        // 更新longPressLocation为当前的collectionView坐标
+        longPressLocation = collectionViewLocation
+        
+        print("contentOffset x = \(newOffset.x)")
     }
     
     private func endZooming() {
