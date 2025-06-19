@@ -39,27 +39,29 @@ class ViewController: UIViewController {
         scrollView.showsVerticalScrollIndicator = false
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.bounces = true
+        scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.bouncesZoom = true
         
         // 设置CollectionView
-        let layout = UICollectionViewFlowLayout()
+        let layout = BBLayout()
         layout.scrollDirection = .horizontal
         layout.minimumLineSpacing = 0
         layout.minimumInteritemSpacing = 0
         
         collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
-        collectionView.isPagingEnabled = true
         collectionView.showsHorizontalScrollIndicator = false
         collectionView.delegate = self
         collectionView.dataSource = self
-        
+        collectionView.contentInsetAdjustmentBehavior = .never
+
         // 注册cell
         collectionView.register(ImageCell.self, forCellWithReuseIdentifier: "ImageCell")
         
         // 设置从右到左的语义
         collectionView.semanticContentAttribute = .forceRightToLeft
-        
+        collectionView.isPagingEnabled = false
+
         // 将CollectionView添加到ScrollView中
         scrollView.addSubview(collectionView)
         scrollView.contentSize = collectionView.frame.size
@@ -180,24 +182,36 @@ class ViewController: UIViewController {
 // MARK: - UICollectionViewDataSource
 extension ViewController: UICollectionViewDataSource {
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        return imageNames.count
+        return imageNames.count * 100
     }
     
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ImageCell", for: indexPath) as! ImageCell
         
         // 这里使用系统图片作为示例，实际使用时替换为你的图片
-        let imageName = "photo.fill" // 使用SF Symbols作为示例
-        cell.configure(with: UIImage(systemName: imageName))
-        
+        cell.configure(with: UIImage(named: "test"))
+        cell.titleLabel.text = "\(indexPath.row)"
         return cell
+    }
+    
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        if collectionView.isPagingEnabled == false {
+            collectionView.isPagingEnabled = true
+        } else {
+            collectionView.isPagingEnabled = false
+        }
+        collectionView.semanticContentAttribute = .unspecified
+        collectionView.reloadData()
+//        collectionView.setContentOffset(CGPoint(x: 0, y: 0), animated: true)
+        collectionView.scrollToItem(at: indexPath, at: .right, animated: true)
     }
 }
 
 // MARK: - UICollectionViewDelegateFlowLayout
 extension ViewController: UICollectionViewDelegateFlowLayout {
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
-        return collectionView.bounds.size
+        let image =  UIImage(named: "test")
+        return CGSize(width: image?.size.height ?? 0, height: collectionView.bounds.height)
     }
 }
 
@@ -219,6 +233,7 @@ extension ViewController: UIScrollViewDelegate {
 // MARK: - ImageCell
 class ImageCell: UICollectionViewCell {
     let imageView = UIImageView()
+    lazy var titleLabel = UILabel()
     
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -234,17 +249,30 @@ class ImageCell: UICollectionViewCell {
         imageView.backgroundColor = .clear
         contentView.addSubview(imageView)
         
-        imageView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            imageView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            imageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            imageView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            imageView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
-        ])
+        titleLabel.textColor = UIColor.yellow
+        contentView.addSubview(titleLabel)
+        
+        titleLabel.snp.makeConstraints { make in
+            make.trailing.equalToSuperview()
+            make.top.equalTo(100)
+        }
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        imageView.center = contentView.center
     }
     
     func configure(with image: UIImage?) {
         imageView.image = image
+        var rect = imageView.frame
+        rect.size = image?.size ?? .zero
+        imageView.frame = rect
     }
 }
 
+class BBLayout: UICollectionViewFlowLayout {
+    override var flipsHorizontallyInOppositeLayoutDirection: Bool { return  true }
+}
+
+import SnapKit
